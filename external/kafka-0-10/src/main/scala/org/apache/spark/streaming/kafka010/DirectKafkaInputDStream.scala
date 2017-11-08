@@ -17,18 +17,14 @@
 
 package org.apache.spark.streaming.kafka010
 
-import java.{ util => ju }
+import java.{util => ju}
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicReference
 
-import scala.annotation.tailrec
 import scala.collection.JavaConverters._
 import scala.collection.mutable
-
 import org.apache.kafka.clients.consumer._
-import org.apache.kafka.common.{ PartitionInfo, TopicPartition }
-
-import org.apache.spark.SparkException
+import org.apache.kafka.common.{TopicPartition}
 import org.apache.spark.internal.Logging
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.streaming.{StreamingContext, Time}
@@ -162,6 +158,7 @@ private[spark] class DirectKafkaInputDStream[K, V](
    * which would throw off consumer position.  Fix position if this happens.
    */
   private def paranoidPoll(c: Consumer[K, V]): Unit = {
+    logInfo(s"begin paranoid...........")
     val msgs = c.poll(0)
     if (!msgs.isEmpty) {
       // position should be minimum offset per topicpartition
@@ -174,6 +171,7 @@ private[spark] class DirectKafkaInputDStream[K, V](
           c.seek(tp, off)
       }
     }
+    logInfo(s"end paranoid...........")
   }
 
   /**
@@ -192,7 +190,21 @@ private[spark] class DirectKafkaInputDStream[K, V](
     c.pause(newPartitions.asJava)
     // find latest available offsets
     c.seekToEnd(currentOffsets.keySet.asJava)
-    parts.map(tp => tp -> c.position(tp)).toMap
+
+    logDebug(s"It is Set kafka streaming maxPollCount:${ppc.maxPollCount} ")
+    if( ppc.maxPollCount > 0 ) {
+      parts.map(tp => {
+        var lastPosition = c.position(tp)
+        val curPosition = currentOffsets(tp)
+        if((lastPosition-curPosition)>ppc.maxPollCount) {
+          lastPosition = curPosition + ppc.maxPollCount
+          logInfo(s"latestOffsets() ${tp.partition()},min ${curPosition},max reset ${lastPosition}")
+        }
+        tp -> lastPosition
+      }).toMap
+    } else {
+      parts.map(tp => tp -> c.position(tp)).toMap
+    }
   }
 
   // limits the maximum number of messages per partition
@@ -208,6 +220,8 @@ private[spark] class DirectKafkaInputDStream[K, V](
   }
 
   override def compute(validTime: Time): Option[KafkaRDD[K, V]] = {
+    logInfo(s"start compute() .....")
+
     val untilOffsets = clamp(latestOffsets())
     val offsetRanges = untilOffsets.map { case (tp, uo) =>
       val fo = currentOffsets(tp)
@@ -234,11 +248,13 @@ private[spark] class DirectKafkaInputDStream[K, V](
     ssc.scheduler.inputInfoTracker.reportInfo(validTime, inputInfo)
 
     currentOffsets = untilOffsets
+    logInfo(s"end compute() .....")
     commitAll()
     Some(rdd)
   }
 
   override def start(): Unit = {
+    logInfo(s"start() starting.....")
     val c = consumer
     paranoidPoll(c)
     if (currentOffsets.isEmpty) {
@@ -247,8 +263,13 @@ private[spark] class DirectKafkaInputDStream[K, V](
       }.toMap
     }
 
+    currentOffsets.foreach { tp =>
+      logInfo(s"start() ${tp._1.topic()},${tp._1.partition()},init position:${tp._2}")
+    }
+
     // don't actually want to consume any messages, so pause all partitions
     c.pause(currentOffsets.keySet.asJava)
+    logInfo(s"start() end ....")
   }
 
   override def stop(): Unit = this.synchronized {

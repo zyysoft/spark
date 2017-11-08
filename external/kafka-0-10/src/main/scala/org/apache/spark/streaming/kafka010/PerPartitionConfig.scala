@@ -34,6 +34,10 @@ abstract class PerPartitionConfig extends Serializable {
    *  from each Kafka partition.
    */
   def maxRatePerPartition(topicPartition: TopicPartition): Long
+
+
+  def maxPollCount: Int = 0
+
 }
 
 /**
@@ -43,5 +47,11 @@ private class DefaultPerPartitionConfig(conf: SparkConf)
     extends PerPartitionConfig {
   val maxRate = conf.getLong("spark.streaming.kafka.maxRatePerPartition", 0)
 
+
   def maxRatePerPartition(topicPartition: TopicPartition): Long = maxRate
+
+
+  override def maxPollCount: Int = {
+    conf.getInt("spark.streaming.kafka.maxPollCount", 0)
+  }
 }
